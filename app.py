@@ -50,7 +50,7 @@ splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=120
 )
 
-# lLLM
+# lLLm 
 
 llms = []
 provider = os.getenv("LLM_PROVIDER", "grok").strip().lower()
