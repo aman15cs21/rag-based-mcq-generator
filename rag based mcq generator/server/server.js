@@ -11,15 +11,18 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const AI_URL =
     process.env.AI_SERVICE_URL || "http://127.0.0.1:8000";
+const MAX_PDF_SIZE = 100 * 1024 * 1024;
+const MAX_JSON_SIZE = "145mb";
 
 app.use(cors({
     origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173"
 }));
-app.use(express.json({ limit: "1mb" }));
+// Base64 increases a 100 MB PDF to about 134 MB, plus JSON overhead.
+app.use(express.json({ limit: MAX_JSON_SIZE }));
 
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 },
+    limits: { fileSize: MAX_PDF_SIZE },
     fileFilter: (req, file, cb) => {
         const valid =
             file.mimetype === "application/pdf" ||
@@ -50,7 +53,11 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
             document_id: documentId,
             filename: req.file.originalname,
             pdf_base64: req.file.buffer.toString("base64")
-        }, { timeout: 120000, maxBodyLength: 25 * 1024 * 1024 });
+        }, {
+            timeout: 120000,
+            maxBodyLength: 145 * 1024 * 1024,
+            maxContentLength: 145 * 1024 * 1024
+        });
 
         documents.set(documentId, {
             status: "ready",
@@ -192,7 +199,7 @@ app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError &&
         err.code === "LIMIT_FILE_SIZE") {
         return res.status(413).json({
-            error: "PDF must be 10 MB or smaller."
+            error: "PDF must be 100 MB or smaller."
         });
     }
 

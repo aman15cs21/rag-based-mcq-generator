@@ -2,19 +2,22 @@
 
 RAG Quiz Generator turns a text-based PDF into a five-question multiple-choice
 quiz. The application extracts the PDF text, splits it into chunks, stores the
-chunks in ChromaDB with Hugging Face embeddings, retrieves relevant context,
+chunks in Qdrant with Hugging Face embeddings, retrieves relevant context,
 and asks a configured LLM to generate and validate the quiz.
+
+For the complete component, data-flow, API-boundary, deployment, and
+reliability design, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Features
 
 - Upload PDF files up to 10 MB.
-- Extract and index PDF text with PyMuPDF and ChromaDB.
+- Extract and index PDF text with PyMuPDF and Qdrant.
 - Generate exactly five MCQs with four options each.
 - Ground questions and explanations in the uploaded document.
 - Select answers in a React web interface and receive a score with explanations.
 - Use Google Gemini or Groq as the quiz-generation provider.
 - Keep document and quiz state in memory at the Express gateway and vectors on
-  disk in ChromaDB.
+  the configured Qdrant server.
 
 ## Architecture
 
@@ -28,7 +31,7 @@ Express API gateway (:5000)
 Flask RAG/AI service (:8000)
        |                 |
        v                 v
-   ChromaDB       Gemini or Groq
+   Qdrant         Gemini or Groq
 ```
 
 The browser calls the Express gateway. The gateway accepts the PDF upload,
@@ -42,7 +45,6 @@ generation.
 .
 ├── app.py                         # Flask RAG and LLM service
 ├── ai.requirement.txt             # Python dependencies
-├── chroma_db/                     # Local vector database (generated)
 └── rag based mcq generator/
     ├── .env                       # Local secrets and service settings
     ├── requirements.txt           # Same Python dependency list
@@ -128,7 +130,8 @@ Optional settings:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FLASK_PORT` | `8000` | Port used by the Flask service |
-| `CHROMA_DIR` | `chroma_db` in the project root | ChromaDB persistence directory |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
+| `QDRANT_API_KEY` | unset | Qdrant API key; required for Qdrant Cloud |
 | `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Gemini model name |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model name |
 | `AI_SERVICE_URL` | `http://127.0.0.1:8000` | Flask URL used by Express |
@@ -175,7 +178,7 @@ Open the URL printed by Vite, normally
 2. Click **Upload & Process**.
 3. Express sends the PDF to Flask's `/process` endpoint.
 4. Flask extracts text, creates overlapping chunks, and persists embeddings in
-   ChromaDB.
+   Qdrant.
 5. Click **Generate 5 Questions**.
 6. Flask retrieves relevant chunks and asks the configured LLM for five
    validated questions.
@@ -314,12 +317,13 @@ model are available, and ensure the PDF contains enough meaningful text.
 ### State disappears after a restart
 
 Express stores document status and quiz answer keys in memory. Restarting it
-clears those maps. ChromaDB vectors remain on disk, but the browser must upload
-and process the PDF again to create a new gateway document ID.
+clears those maps. Qdrant vectors remain on the configured server, but the
+browser must upload and process the PDF again to create a new gateway document
+ID.
 
 ## Development notes
 
-- ChromaDB data is local and is ignored by Git.
+- Vector data is stored in the configured Qdrant server.
 - The backend rejects files larger than 10 MB.
 - The generated quiz must contain exactly five distinct questions.
 - The LLM is instructed to use only retrieved PDF context; nevertheless,

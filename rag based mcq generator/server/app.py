@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -13,11 +12,11 @@ from flask_cors import CORS
 from pydantic import BaseModel, Field
 from typing import Literal
 
-from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -25,21 +24,23 @@ from langchain_core.output_parsers import StrOutputParser
 # dot load 
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_FILE = os.path.join(PROJECT_DIR, "rag based mcq generator", ".env")
+PROJECT_ROOT = os.path.dirname(PROJECT_DIR)
+ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 load_dotenv(ENV_FILE)
 
 app = Flask(__name__)
 CORS(app)
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+# A 100 MB PDF becomes roughly 134 MB when sent as base64, plus JSON overhead.
+app.config["MAX_CONTENT_LENGTH"] = 145 * 1024 * 1024
 logging.basicConfig(level=logging.INFO)
 
-CHROMA_DIR = os.getenv(
-    "CHROMA_DIR",
-    os.path.join(PROJECT_DIR, "chroma_db")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or os.getenv("qdrant_api")
+
+qdrant_client = QdrantClient(
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY or None
 )
-if not os.path.isabs(CHROMA_DIR):
-    CHROMA_DIR = os.path.join(PROJECT_DIR, CHROMA_DIR)
-os.makedirs(CHROMA_DIR, exist_ok=True)
 
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -53,22 +54,8 @@ splitter = RecursiveCharacterTextSplitter(
 # lLLm 
 
 llms = []
-provider = os.getenv("LLM_PROVIDER", "grok").strip().lower()
+provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 
-# if provider == "grok" and os.getenv("GROK_API_KEY"):
-#     llms.append((
-#         "Grok",
-#         ChatOpenAI(
-#             model=os.getenv(
-#                 "GROK_MODEL", "grok-3-mini"
-#             ),
-#             api_key=os.getenv("GROK_API_KEY"),
-#             base_url=os.getenv("GROK_BASE_URL", "https://api.x.ai/v1"),
-#             temperature=0.2,
-#             max_retries=0,
-#             timeout=30
-#         )
-#     ))
 
 if provider == "groq" and os.getenv("GROQ_API_KEY"):
     llms.append((
@@ -105,7 +92,7 @@ app.logger.info(
     " -> ".join(name for name, _ in llms)
 )
 
-# ---------------- DATA MODELS ----------------
+# DATA MODELS 
 
 class Question(BaseModel):
     question: str = Field(min_length=8)
@@ -120,9 +107,18 @@ class Quiz(BaseModel):
     )
 
 
-# ---------------- CHROMA VECTOR STORE ----------------
+#  QDRANT VECTOR STORE 
 
 def get_store(document_id):
+    return QdrantVectorStore.from_existing_collection(
+        embedding=embeddings,
+        collection_name=get_collection_name(document_id),
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY or None
+    )
+
+
+def get_collection_name(document_id):
     safe_id = re.sub(
         r"[^a-zA-Z0-9_-]", "", str(document_id)
     )[:40]
@@ -130,14 +126,10 @@ def get_store(document_id):
     if not safe_id:
         raise ValueError("Invalid document ID.")
 
-    return Chroma(
-        collection_name=f"ragquiz_{safe_id}",
-        embedding_function=embeddings,
-        persist_directory=CHROMA_DIR
-    )
+    return f"ragquiz_{safe_id}"
 
 
-# ---------------- HEALTH CHECK ----------------
+#  HEALTH CHECK
 
 @app.get("/health")
 def health():
@@ -147,7 +139,7 @@ def health():
     })
 
 
-# ---------------- PROCESS PDF ----------------
+#  PROCESS PDF 
 
 @app.post("/process")
 def process_pdf():
@@ -185,17 +177,14 @@ def process_pdf():
                 "error": "No text chunks created."
             }), 422
 
-        store = get_store(document_id)
+        collection_name = get_collection_name(document_id)
 
-        existing = store.get(
-            where={"document_id": str(document_id)}
-        )
+        if qdrant_client.collection_exists(collection_name):
+            qdrant_client.delete_collection(collection_name)
 
-        if existing.get("ids"):
-            store.delete(ids=existing["ids"])
-
-        store.add_texts(
+        QdrantVectorStore.from_texts(
             texts=chunks,
+            embedding=embeddings,
             metadatas=[
                 {
                     "document_id": str(document_id),
@@ -204,9 +193,12 @@ def process_pdf():
                 for i in range(len(chunks))
             ],
             ids=[
-                f"{re.sub(r'[^a-zA-Z0-9_-]', '', str(document_id))[:40]}_{i}"
+                f"{collection_name.removeprefix('ragquiz_')}_{i}"
                 for i in range(len(chunks))
-            ]
+            ],
+            url=QDRANT_URL,
+            api_key=QDRANT_API_KEY or None,
+            collection_name=collection_name
         )
 
         return jsonify({
@@ -221,7 +213,7 @@ def process_pdf():
         }), 500
 
 
-# ---------------- GENERATE QUIZ ----------------
+#  GENERATE QUIZ 
 
 @app.post("/generate-quiz")
 def generate_quiz():
@@ -377,7 +369,7 @@ PDF CONTEXT:
     }), 502
 
 
-# ---------------- START FLASK ----------------
+#  START FLASK 
 
 if __name__ == "__main__":
     app.run(
