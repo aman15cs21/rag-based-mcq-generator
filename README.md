@@ -101,32 +101,6 @@ Set-Location "..\frontend"
 npm install
 ```
 
-## Running the server in Docker
-
-The `server` Docker image contains both backend processes: Gunicorn runs the
-Flask RAG service on port `8000`, and Node runs the Express gateway on port
-`5000`. The frontend is not included in the image.
-
-From `rag based mcq generator\server`:
-
-```powershell
-docker build -t rag-mcq-server .
-docker run --rm --name rag-mcq-server `
-  --env-file ..\.env `
-  -p 5000:5000 `
-  -p 8000:8000 `
-  rag-mcq-server
-```
-
-The `.env` file is passed at runtime and is not copied into the image. Set
-`QDRANT_URL` to an address reachable from the container (for example, a
-Qdrant Cloud URL or `http://host.docker.internal:6333` for Qdrant running on
-the host). `AI_SERVICE_URL` should remain
-`http://127.0.0.1:8000` because Flask and Express run in the same container.
-
-The browser-facing API is available at `http://localhost:5000`; port `8000` is
-published for Flask health checks and troubleshooting.
-
 ## Configuration
 
 Create `rag based mcq generator/.env`. Do not commit this file.
